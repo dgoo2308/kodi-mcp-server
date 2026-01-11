@@ -281,21 +281,6 @@ Assistant: Uses kodi:get_recently_added → Lists recent additions with dates
 
 ## Integration Examples
 
-### With Transmission MCP Server
-
-Perfect companion for automated media management:
-
-```
-User: "Download Dune (2021) if I don't have it"
-
-Workflow:
-1. kodi:check_movie_exists("Dune", 2021)
-2. If not found:
-   - transmission:add_torrent(magnet_link, "/media/Movies/")
-   - kodi:update_library()
-3. If found: "Movie already exists in library"
-```
-
 ### Smart TV Show Management (NEW v1.2.0)
 
 ```
@@ -304,29 +289,6 @@ User: "Check for new Murderbot episodes and play where I left off"
 Workflow:
 1. kodi:scan_tv_show("Murderbot") → Fast targeted scan
 2. kodi:play_next_unwatched("Murderbot") → Plays next unwatched episode
-```
-
-### Automated Download Workflow
-
-```python
-# Pseudo-code workflow
-async def smart_download(title, year, magnet_link):
-    # Check if movie exists
-    exists = await kodi.check_movie_exists(title, year)
-    
-    if not exists:
-        # Download via transmission
-        await transmission.add_torrent(magnet_link)
-        
-        # Wait for download completion
-        await wait_for_download()
-        
-        # Scan library for new content
-        await kodi.update_library()
-        
-        return f"Downloaded and added {title} to library"
-    else:
-        return f"{title} already exists in library"
 ```
 
 ## Troubleshooting
@@ -406,7 +368,6 @@ MIT License - see LICENSE file for details.
 
 ## Related Projects
 
-- [Transmission MCP Server](https://github.com/v-odoo-testing/transmission-mcp-server) - BitTorrent client integration
 - [Claude Desktop](https://claude.ai) - AI assistant with MCP support
 
 ## Support

@@ -26,7 +26,10 @@ from mcp.types import (
     EmbeddedResource,
     LoggingLevel,
     ServerCapabilities,
-    ToolsCapability
+    ToolsCapability,
+    Prompt,
+    PromptMessage,
+    GetPromptResult
 )
 from pydantic import BaseModel, Field
 
@@ -323,6 +326,24 @@ class KodiAPI:
         """Clean the library (remove orphaned entries)."""
         await self._make_request("VideoLibrary.Clean", use_socks5=use_socks5)
         return True
+    
+    async def set_episode_playcount(self, episode_id: int, playcount: int, use_socks5: bool = False) -> bool:
+        """Set the playcount for an episode (0 = unwatched, 1+ = watched)."""
+        params = {
+            "episodeid": episode_id,
+            "playcount": playcount
+        }
+        await self._make_request("VideoLibrary.SetEpisodeDetails", params, use_socks5)
+        return True
+    
+    async def set_movie_playcount(self, movie_id: int, playcount: int, use_socks5: bool = False) -> bool:
+        """Set the playcount for a movie (0 = unwatched, 1+ = watched)."""
+        params = {
+            "movieid": movie_id,
+            "playcount": playcount
+        }
+        await self._make_request("VideoLibrary.SetMovieDetails", params, use_socks5)
+        return True
 
 
 # Initialize Kodi API client
@@ -330,6 +351,63 @@ kodi = KodiAPI()
 
 # Create MCP server instance
 server = Server("kodi-mcp-server")
+
+# Help text for prompts
+KODI_HELP_TEXT = """I can help you manage your Kodi media center. Here are the available commands:
+
+**SEARCH & FIND:**
+- "Search for [movie/show title]" - Find movies or TV shows
+- "Do I have [title]?" - Check if content exists in library
+- "Show me action movies from 2023" - Search by genre/year
+
+**PLAYBACK:**
+- "Play [movie title]" - Play a specific movie
+- "Play Breaking Bad S1E1" - Play a specific episode
+- "Play next unwatched episode of [show]" - Smart resume watching
+- "Pause/Stop playback" - Control current playback
+- "What's playing?" - Get playback status
+
+**WATCH STATUS:**
+- "Mark [show] as watched" - Mark entire show watched
+- "Mark [show] Season 2 as unwatched" - Reset a season
+- "Mark [movie] as watched" - Update movie status
+
+**LIBRARY MANAGEMENT:**
+- "Scan [show name] for new episodes" - Targeted scan (fast!)
+- "Update library" - Full library scan
+- "Show recently added" - Recent additions
+- "Library stats" - Overview of your collection
+
+**EPISODE DETAILS:**
+- "Get details for [show] S1E4" - File path, rating, plot
+
+All commands support remote access via SOCKS5 proxy - just mention "use SOCKS5" or "via proxy"."""
+
+
+@server.list_prompts()
+async def handle_list_prompts() -> list[Prompt]:
+    """List available prompts."""
+    return [
+        Prompt(
+            name="kodi-help",
+            description="Get help with Kodi media center commands",
+        ),
+    ]
+
+
+@server.get_prompt()
+async def handle_get_prompt(name: str) -> GetPromptResult:
+    """Get a specific prompt."""
+    if name == "kodi-help":
+        return GetPromptResult(
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(type="text", text=KODI_HELP_TEXT),
+                )
+            ]
+        )
+    raise ValueError(f"Unknown prompt: {name}")
 
 
 @server.list_tools()
@@ -515,6 +593,35 @@ async def handle_list_tools() -> List[Tool]:
                 },
                 "required": []
             }
+        ),
+        Tool(
+            name="set_watch_status",
+            description="Mark episode(s), season(s), or entire TV show as watched or unwatched",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "show_title": {"type": "string", "description": "TV show title"},
+                    "season": {"type": "integer", "description": "Season number (optional - if omitted, applies to entire show)"},
+                    "episode": {"type": "integer", "description": "Episode number (optional - if omitted, applies to entire season or show)"},
+                    "watched": {"type": "boolean", "description": "True to mark as watched, False to mark as unwatched"},
+                    "use_socks5": {"type": "boolean", "description": "Use SOCKS5 proxy for this request (default: false)", "default": False}
+                },
+                "required": ["show_title", "watched"]
+            }
+        ),
+        Tool(
+            name="set_movie_watch_status",
+            description="Mark a movie as watched or unwatched",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Movie title"},
+                    "year": {"type": "integer", "description": "Release year (optional for disambiguation)"},
+                    "watched": {"type": "boolean", "description": "True to mark as watched, False to mark as unwatched"},
+                    "use_socks5": {"type": "boolean", "description": "Use SOCKS5 proxy for this request (default: false)", "default": False}
+                },
+                "required": ["title", "watched"]
+            }
         )
     ]
 
@@ -575,6 +682,10 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
             return await scan_tv_show_tool(arguments)
         elif name == "get_episode_details":
             return await get_episode_details_tool(arguments)
+        elif name == "set_watch_status":
+            return await set_watch_status_tool(arguments)
+        elif name == "set_movie_watch_status":
+            return await set_movie_watch_status_tool(arguments)
         else:
             raise ValueError(f"Unknown tool: {name}")
             
@@ -1254,6 +1365,131 @@ async def get_episode_details_tool(arguments: Dict[str, Any]) -> List[TextConten
         return [TextContent(type="text", text=f"Error getting episode details: {str(e)}")]
 
 
+async def set_watch_status_tool(arguments: Dict[str, Any]) -> List[TextContent]:
+    """Mark episode(s), season(s), or entire TV show as watched or unwatched."""
+    show_title = arguments.get("show_title", "").strip()
+    season_num = arguments.get("season")
+    episode_num = arguments.get("episode")
+    watched = arguments.get("watched")
+    use_socks5 = arguments.get("use_socks5", False)
+    
+    if not show_title:
+        return [TextContent(type="text", text="Error: TV show title is required.")]
+    
+    if watched is None:
+        return [TextContent(type="text", text="Error: 'watched' parameter is required (true or false).")]
+    
+    playcount = 1 if watched else 0
+    status_text = "watched" if watched else "unwatched"
+    
+    try:
+        # Find the TV show
+        tv_shows = await kodi.get_tv_shows(use_socks5=use_socks5)
+        
+        matching_show = None
+        for show in tv_shows:
+            if fuzzy_match(show_title, show.title):
+                matching_show = show
+                break
+        
+        if not matching_show:
+            return [TextContent(type="text", text=f"TV show '{show_title}' not found in library.")]
+        
+        # Get all episodes for the show
+        episodes = await kodi.get_episodes(matching_show.tvshowid, use_socks5=use_socks5)
+        
+        if not episodes:
+            return [TextContent(type="text", text=f"No episodes found for '{matching_show.title}'.")]
+        
+        # Filter episodes based on season/episode parameters
+        target_episodes = []
+        
+        if episode_num is not None and season_num is not None:
+            # Specific episode
+            target_episodes = [ep for ep in episodes if ep.season == season_num and ep.episode == episode_num]
+            scope_text = f"S{season_num:02d}E{episode_num:02d}"
+        elif season_num is not None:
+            # Entire season
+            target_episodes = [ep for ep in episodes if ep.season == season_num]
+            scope_text = f"Season {season_num}"
+        else:
+            # Entire show
+            target_episodes = episodes
+            scope_text = "all episodes"
+        
+        if not target_episodes:
+            return [TextContent(type="text", text=f"No matching episodes found for {scope_text} of '{matching_show.title}'.")]
+        
+        # Update playcount for all target episodes
+        updated_count = 0
+        for ep in target_episodes:
+            await kodi.set_episode_playcount(ep.episodeid, playcount, use_socks5=use_socks5)
+            updated_count += 1
+        
+        emoji = "✅" if watched else "🔄"
+        result_text = f"{emoji} Marked **{matching_show.title}** {scope_text} as {status_text}\n"
+        result_text += f"**Episodes updated:** {updated_count}"
+        
+        return [TextContent(type="text", text=result_text)]
+        
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error setting watch status: {str(e)}")]
+
+
+async def set_movie_watch_status_tool(arguments: Dict[str, Any]) -> List[TextContent]:
+    """Mark a movie as watched or unwatched."""
+    title = arguments.get("title", "").strip()
+    year = arguments.get("year")
+    watched = arguments.get("watched")
+    use_socks5 = arguments.get("use_socks5", False)
+    
+    if not title:
+        return [TextContent(type="text", text="Error: Movie title is required.")]
+    
+    if watched is None:
+        return [TextContent(type="text", text="Error: 'watched' parameter is required (true or false).")]
+    
+    playcount = 1 if watched else 0
+    status_text = "watched" if watched else "unwatched"
+    
+    try:
+        movies = await kodi.get_movies(use_socks5=use_socks5)
+        
+        # Find matching movie
+        matching_movies = []
+        for movie in movies:
+            title_match = fuzzy_match(title, movie.title)
+            year_match = year is None or movie.year == year
+            
+            if title_match and year_match:
+                matching_movies.append(movie)
+        
+        if not matching_movies:
+            search_text = f"'{title}'"
+            if year:
+                search_text += f" ({year})"
+            return [TextContent(type="text", text=f"Movie {search_text} not found in Kodi library.")]
+        
+        if len(matching_movies) > 1:
+            result_text = f"Multiple movies found matching '{title}':\n\n"
+            for i, movie in enumerate(matching_movies, 1):
+                result_text += f"{i}. **{movie.title}** ({movie.year})\n"
+            result_text += "\nPlease be more specific with year or exact title."
+            return [TextContent(type="text", text=result_text)]
+        
+        # Update the movie
+        movie = matching_movies[0]
+        await kodi.set_movie_playcount(movie.movieid, playcount, use_socks5=use_socks5)
+        
+        emoji = "✅" if watched else "🔄"
+        result_text = f"{emoji} Marked **{movie.title}** ({movie.year}) as {status_text}"
+        
+        return [TextContent(type="text", text=result_text)]
+        
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error setting movie watch status: {str(e)}")]
+
+
 async def main():
     """Main entry point for the server."""
     async with stdio_server() as (read_stream, write_stream):
@@ -1262,7 +1498,7 @@ async def main():
             write_stream,
             InitializationOptions(
                 server_name="kodi-mcp-server",
-                server_version="1.2.0",
+                server_version="1.3.0",
                 capabilities=ServerCapabilities(
                     tools=ToolsCapability(listChanged=True)
                 )

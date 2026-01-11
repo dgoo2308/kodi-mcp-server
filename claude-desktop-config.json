@@ -10,7 +10,7 @@
         "KODI_PASSWORD": "kodi",
         "KODI_TIMEOUT": "30",
         "USE_HTTPS": "false",
-        "SOCKS5_HOST": "",
+        "SOCKS5_HOST": "localhost",
         "SOCKS5_PORT": "1080",
         "SOCKS5_USERNAME": "",
         "SOCKS5_PASSWORD": ""
