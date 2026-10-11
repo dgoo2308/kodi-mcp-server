@@ -64,6 +64,8 @@ class KodiMovie(BaseModel):
     runtime: int = 0
     plot: str = ""
     director: List[str] = Field(default_factory=list)
+    cast: List[Dict[str, Any]] = Field(default_factory=list)
+    playcount: int = 0
 
 
 class KodiTVShow(BaseModel):
@@ -157,15 +159,21 @@ class KodiAPI:
             proxy_info = " via SOCKS5 proxy" if use_socks5 and self.proxy_url else ""
             raise Exception(f"Error communicating with Kodi{proxy_info}: {str(e)}")
     
-    async def get_movies(self, properties: Optional[List[str]] = None, use_socks5: bool = False) -> List[KodiMovie]:
-        """Get all movies from Kodi library."""
+    async def get_movies(self, properties: Optional[List[str]] = None, use_socks5: bool = False, actor: Optional[str] = None) -> List[KodiMovie]:
+        """Get movies from Kodi library, optionally only those with a matching cast member."""
         if properties is None:
-            properties = ["title", "year", "file", "genre", "rating", "runtime", "plot", "director"]
+            properties = ["title", "year", "file", "genre", "rating", "runtime", "plot", "director", "playcount"]
         
         params = {
             "properties": properties,
             "sort": {"order": "ascending", "method": "title"}
         }
+        
+        if actor:
+            # Filter server-side; the cast list is only requested for the matches
+            params["filter"] = {"field": "actor", "operator": "contains", "value": actor}
+            if "cast" not in properties:
+                params["properties"] = properties + ["cast"]
         
         result = await self._make_request("VideoLibrary.GetMovies", params, use_socks5)
         movies = result.get("movies", [])
@@ -359,6 +367,8 @@ KODI_HELP_TEXT = """I can help you manage your Kodi media center. Here are the a
 - "Search for [movie/show title]" - Find movies or TV shows
 - "Do I have [title]?" - Check if content exists in library
 - "Show me action movies from 2023" - Search by genre/year
+- "What movies do I have with [actor]?" - Search movies by actor
+- "Show me unwatched comedies, best rated first" - Filter by watch status, sort and limit
 
 **PLAYBACK:**
 - "Play [movie title]" - Play a specific movie
@@ -416,13 +426,17 @@ async def handle_list_tools() -> List[Tool]:
     return [
         Tool(
             name="search_movies",
-            description="Search for movies in Kodi library by title, year, or genre",
+            description="Search for movies in Kodi library by title, year, genre, or actor. Can filter to unwatched movies, sort by rating or year, and limits the number of results returned",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Movie title to search for"},
                     "year": {"type": "integer", "description": "Release year"},
                     "genre": {"type": "string", "description": "Genre to filter by"},
+                    "actor": {"type": "string", "description": "Actor name to filter by (partial match, e.g. 'McCarthy')"},
+                    "unwatched_only": {"type": "boolean", "description": "Only return movies that have not been watched (default: false)", "default": False},
+                    "sort_by": {"type": "string", "enum": ["title", "rating", "year"], "description": "Sort order: title (A-Z), rating (highest first) or year (newest first). Default: title", "default": "title"},
+                    "limit": {"type": "integer", "description": "Maximum number of movies to return (default: 50, 0 = no limit)", "default": 50},
                     "use_socks5": {"type": "boolean", "description": "Use SOCKS5 proxy for this request (default: false)", "default": False}
                 },
                 "required": []
@@ -652,6 +666,14 @@ def fuzzy_match(search_term: str, target: str, threshold: float = 0.6) -> bool:
     return False
 
 
+def format_runtime(seconds: int) -> str:
+    """Format a Kodi runtime (reported in seconds) as e.g. '1h 41m'."""
+    if not seconds:
+        return "Unknown"
+    hours, minutes = divmod(round(seconds / 60), 60)
+    return f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+
+
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
     """Handle tool calls."""
@@ -699,11 +721,19 @@ async def search_movies_tool(arguments: Dict[str, Any]) -> List[TextContent]:
     title_search = arguments.get("title", "").strip()
     year_search = arguments.get("year")
     genre_search = arguments.get("genre", "").strip().lower()
+    actor_search = arguments.get("actor", "").strip()
+    unwatched_only = bool(arguments.get("unwatched_only", False))
+    sort_by = arguments.get("sort_by") or "title"
+    limit = arguments.get("limit")
+    limit = 50 if limit is None else int(limit)
     use_socks5 = arguments.get("use_socks5", False)
     
-    movies = await kodi.get_movies(use_socks5=use_socks5)
+    if sort_by not in ("title", "rating", "year"):
+        return [TextContent(type="text", text="Error: sort_by must be 'title', 'rating' or 'year'.")]
     
-    if not movies:
+    movies = await kodi.get_movies(use_socks5=use_socks5, actor=actor_search or None)
+    
+    if not movies and not actor_search:
         return [TextContent(type="text", text="No movies found in Kodi library.")]
     
     # Filter movies based on search criteria
@@ -725,7 +755,12 @@ async def search_movies_tool(arguments: Dict[str, Any]) -> List[TextContent]:
         if genre_search:
             genre_match = any(genre_search in genre.lower() for genre in movie.genre)
         
-        if title_match and year_match and genre_match:
+        # Watch status matching
+        watched_match = True
+        if unwatched_only:
+            watched_match = movie.playcount == 0
+        
+        if title_match and year_match and genre_match and watched_match:
             filtered_movies.append(movie)
     
     if not filtered_movies:
@@ -736,14 +771,38 @@ async def search_movies_tool(arguments: Dict[str, Any]) -> List[TextContent]:
             search_terms.append(f"year: {year_search}")
         if genre_search:
             search_terms.append(f"genre: '{genre_search}'")
+        if actor_search:
+            search_terms.append(f"actor: '{actor_search}'")
+        if unwatched_only:
+            search_terms.append("unwatched only")
+        
+        if not search_terms:
+            return [TextContent(type="text", text="No movies found in Kodi library.")]
         
         return [TextContent(
             type="text", 
             text=f"No movies found matching {', '.join(search_terms)}."
         )]
     
+    # Sort (movies arrive from Kodi sorted by title)
+    if sort_by == "rating":
+        filtered_movies.sort(key=lambda m: m.rating, reverse=True)
+    elif sort_by == "year":
+        filtered_movies.sort(key=lambda m: m.year, reverse=True)
+    
+    # Limit
+    total_found = len(filtered_movies)
+    if limit > 0 and total_found > limit:
+        filtered_movies = filtered_movies[:limit]
+    
     # Format results
-    result_text = f"Found {len(filtered_movies)} movie(s):\n\n"
+    if len(filtered_movies) < total_found:
+        result_text = (
+            f"Found {total_found} movie(s), showing the first {len(filtered_movies)} sorted by {sort_by}. "
+            f"Narrow the search or raise `limit` to see more:\n\n"
+        )
+    else:
+        result_text = f"Found {total_found} movie(s):\n\n"
     
     for movie in filtered_movies:
         genres = ", ".join(movie.genre) if movie.genre else "Unknown"
@@ -752,8 +811,17 @@ async def search_movies_tool(arguments: Dict[str, Any]) -> List[TextContent]:
         result_text += f"**{movie.title}** ({movie.year})\n"
         result_text += f"  • Genres: {genres}\n"
         result_text += f"  • Director(s): {directors}\n"
+        if actor_search:
+            matched_cast = [
+                f"{member.get('name', '')} as {member['role']}" if member.get("role") else member.get("name", "")
+                for member in movie.cast
+                if actor_search.lower() in member.get("name", "").lower()
+            ]
+            if matched_cast:
+                result_text += f"  • Cast: {', '.join(matched_cast)}\n"
         result_text += f"  • Rating: {movie.rating}/10\n"
-        result_text += f"  • Runtime: {movie.runtime} minutes\n"
+        result_text += f"  • Runtime: {format_runtime(movie.runtime)}\n"
+        result_text += f"  • Watched: {'Yes' if movie.playcount > 0 else 'No'}\n"
         if movie.file:
             result_text += f"  • File: {movie.file}\n"
         result_text += "\n"
@@ -851,7 +919,7 @@ async def check_movie_exists_tool(arguments: Dict[str, Any]) -> List[TextContent
         if movie.genre:
             result_text += f"  • Genres: {', '.join(movie.genre)}\n"
         result_text += f"  • Rating: {movie.rating}/10\n"
-        result_text += f"  • Runtime: {movie.runtime} minutes\n"
+        result_text += f"  • Runtime: {format_runtime(movie.runtime)}\n"
     else:
         result_text = f"Found {len(matching_movies)} movies matching '{title}':\n\n"
         for movie in matching_movies:

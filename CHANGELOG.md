@@ -89,3 +89,15 @@ All notable changes to this project will be documented in this file.
 - Organized test files into `tests/` directory
 - Added test documentation and usage instructions
 - Direct MCP server testing capabilities for development
+
+## [Unreleased]
+
+### Added
+- `search_movies` accepts an `actor` parameter (partial match on cast names, filtered server-side by Kodi); results show the matching cast member and role
+- `search_movies` accepts `unwatched_only`, `sort_by` (`title`, `rating`, `year`) and `limit` (default 50, `0` for no limit); results show watched status
+
+### Changed
+- `search_movies` returns at most 50 movies unless `limit` says otherwise
+
+### Fixed
+- Movie runtime was printed in seconds but labelled as minutes; it is now formatted as hours and minutes in `search_movies` and `check_movie_exists`

@@ -4,7 +4,7 @@ A Model Context Protocol (MCP) server for interacting with Kodi media center. Th
 
 ## Features
 
-- **Library Search**: Search movies and TV shows by title, year, or genre
+- **Library Search**: Search movies and TV shows by title, year, or genre, and movies by actor
 - **Content Verification**: Check if movies/episodes exist before downloading
 - **Smart Playback Control**: Play movies/episodes and control playback
 - **Watch Status Tracking**: **NEW v1.2.0** - Automatically track what you've watched and play next unwatched episodes
@@ -89,7 +89,7 @@ Add this configuration to your Claude Desktop config file:
 ## Available Tools
 
 ### Search Tools
-- `search_movies` - Search movies by title, year, or genre
+- `search_movies` - Search movies by title, year, genre, or actor
 - `search_tv_shows` - Search TV shows by title or genre
 - `check_movie_exists` - Quick check if a movie exists
 - `check_tv_show_exists` - Check TV show/season/episode availability
@@ -155,9 +155,18 @@ Assistant: Uses search_movies with use_socks5=true
   "title": "Movie title to search for",
   "year": 2023,
   "genre": "Action",
+  "actor": "Melissa McCarthy",
+  "unwatched_only": true,
+  "sort_by": "rating",
+  "limit": 20,
   "use_socks5": false
 }
 ```
+
+- `actor` is a partial, case-insensitive match on cast names, filtered by Kodi itself. Results then list the matching cast member and role.
+- `unwatched_only` keeps only movies with a play count of 0. Every result shows its watched status.
+- `sort_by` is `title` (A-Z, default), `rating` (highest first) or `year` (newest first).
+- `limit` caps the number of movies returned (default 50, `0` for no limit). When results are cut, the first line gives the total found.
 
 #### play_movie
 ```json
